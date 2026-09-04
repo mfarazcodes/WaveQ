@@ -23,17 +23,6 @@ import com.waveq.app.ui.theme.*
 // Map
 // ---------------------------------------------------------------------------
 
-/**
- * Stand-in for the crisis map (images 5 and 8).
- *
- * The design shows a stylised map with district labels, incident markers with
- * a coloured halo, and a severity legend. Replace the inner Box with MapLibre
- * Native and offline MBTiles - WORKING_CONVENTIONS bans runtime tile fetching
- * from Google or Mapbox in the mobile critical path.
- *
- * The chrome around the map (legend, "Active Incidents" callout) is real and
- * reusable; only the tile surface is a placeholder.
- */
 @Composable
 fun MapPlaceholder(activeIncidents: Int, modifier: Modifier = Modifier) {
     AppCard(modifier = modifier.fillMaxWidth()) {
@@ -41,12 +30,10 @@ fun MapPlaceholder(activeIncidents: Int, modifier: Modifier = Modifier) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(320.dp)
-                .background(Color(0xFFF0F7FC)), // pale blue map surface from the design
+                .background(Color(0xFFF0F7FC)),
         ) {
-            // District label chip
             MapChip("North District", Modifier.align(Alignment.TopStart).padding(12.dp))
 
-            // Floating incident counter
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -62,7 +49,6 @@ fun MapPlaceholder(activeIncidents: Int, modifier: Modifier = Modifier) {
 
             MapChip("City Center", Modifier.align(Alignment.Center))
 
-            // Legend
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -99,7 +85,6 @@ private fun MapChip(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Incident marker: solid dot with a translucent halo, as in image 5. */
 @Composable
 fun IncidentMarker(severity: Severity, modifier: Modifier = Modifier) {
     Box(modifier = modifier.size(56.dp), contentAlignment = Alignment.Center) {
@@ -132,15 +117,6 @@ val sampleIncidents = listOf(
     Incident("INC-004", "Earthquake", "Suburban Area", "Minor tremors reported", Severity.LOW, "01/09/2026, 14:29:12", false),
 )
 
-/**
- * Incident card (image 9).
- *
- * The design lays these out horizontally in a scrolling row, which truncates
- * text badly on a 390dp screen - you can see it clipping "Hurricane" and
- * "Verified" in the screenshot. I made them full-width vertical cards instead.
- * That is a deliberate deviation: horizontal scroll for primary content is a
- * usability problem, and worse when the user is in an emergency.
- */
 @Composable
 fun IncidentCard(incident: Incident, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     AppCard(modifier = modifier.fillMaxWidth(), onClick = onClick) {
@@ -184,12 +160,6 @@ fun IncidentCard(incident: Incident, modifier: Modifier = Modifier, onClick: () 
 // Operator dashboard
 // ---------------------------------------------------------------------------
 
-/**
- * Operator dashboard (images 5, 7 and 11): a two-tab view over the same data.
- *
- * The design puts the map and the incident list side by side, which clips both
- * on a phone. Stacked vertically here.
- */
 @Composable
 fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
     var tab by remember { mutableIntStateOf(0) }
@@ -234,6 +204,7 @@ fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
                 CompactStatCard("Avg Response Time", "12 min", TextPrimary, Modifier.weight(1f))
             }
             Spacer(Modifier.height(Dimens.sectionSpacing))
+
             // 1. Reports by Severity
             AppCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
@@ -292,20 +263,12 @@ fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
                     )
                 }
             }
-// 4. 24-Hour Report Trend
-            AppCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    SectionHeading(text = "24-Hour Report Trend")
-                    SparklineTrendChart(
-                        points = listOf(1f, 3f, 2f, 5f, 4f, 7f, 5f)
-                    )
-                }
-            }
 
             Spacer(Modifier.height(32.dp))
         }
     }
 }
+
 // ---------------------------------------------------------------------------
 // Admin panel
 // ---------------------------------------------------------------------------
@@ -313,19 +276,14 @@ fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
 data class AdminUser(val name: String, val email: String, val role: String)
 
 val sampleUsers = listOf(
-    AdminUser("Admin User", "admin@emergency.gov", "Administrator"),
-    AdminUser("John Operator", "john.operator@emergency.gov", "Operator"),
-    AdminUser("Jane Smith", "jane.smith@agency.gov", "Operator"),
-    AdminUser("Mike Johnson", "mike.johnson@emergency.gov", "Viewer"),
+    AdminUser("Mohd Faraz", "faraz@waveq.org", "Administrator"),
+    AdminUser("Ishaan Juneja", "ishaan@waveq.org", "Administrator"),
+    AdminUser("Nikita Gupta", "nikita@waveq.org", "Operator"),
+    AdminUser("Naitik", "naitik@waveq.org", "Operator"),
+    AdminUser("Nishank", "nishank@waveq.org", "Operator"),
+    AdminUser("Kajal", "kajal@waveq.org", "Operator"),
 )
 
-/**
- * Admin panel (images 10, 12, 13, 14) - three tabs over one header.
- *
- * The design uses a horizontally scrolling data table with its own scrollbar,
- * which is a desktop pattern. Rendered as stacked rows here; a table that needs
- * horizontal scrolling on a phone is unusable.
- */
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun AdminScreen(initialUsers: List<AdminUser> = sampleUsers) {
