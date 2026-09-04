@@ -234,18 +234,78 @@ fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
                 CompactStatCard("Avg Response Time", "12 min", TextPrimary, Modifier.weight(1f))
             }
             Spacer(Modifier.height(Dimens.sectionSpacing))
-            ChartPlaceholder("Reports by Severity", Modifier.fillMaxWidth())
+            // 1. Reports by Severity
+            AppCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    SectionHeading(text = "Reports by Severity")
+                    DonutChart(
+                        data = listOf(
+                            ChartSlice("Critical", 2f, SeverityCriticalBg),
+                            ChartSlice("High", 1f, SeverityHighBg),
+                            ChartSlice("Medium", 1f, SeverityMediumBg),
+                            ChartSlice("Low", 1f, SeverityLowBg)
+                        )
+                    )
+                }
+            }
+
             Spacer(Modifier.height(Dimens.cardSpacing))
-            ChartPlaceholder("Reports by Type", Modifier.fillMaxWidth())
+
+            // 2. Reports by Type
+            AppCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    SectionHeading(text = "Reports by Type")
+                    HorizontalBarChart(
+                        items = listOf(
+                            BarItem("Flood", 2f, AccentBlue),
+                            BarItem("Fire", 1f, SeverityCriticalBg),
+                            BarItem("Medical", 1f, SeverityHighBg),
+                            BarItem("Infrastructure", 1f, SeverityMediumBg)
+                        )
+                    )
+                }
+            }
+
             Spacer(Modifier.height(Dimens.cardSpacing))
-            ChartPlaceholder("Status Overview", Modifier.fillMaxWidth())
+
+            // 3. Status Overview
+            AppCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    SectionHeading(text = "Status Overview")
+                    DonutChart(
+                        data = listOf(
+                            ChartSlice("Confirmed", 4f, SeverityLowBg),
+                            ChartSlice("Pending Review", 1f, SeverityHighBg)
+                        )
+                    )
+                }
+            }
+
             Spacer(Modifier.height(Dimens.cardSpacing))
-            ChartPlaceholder("24-Hour Report Trend", Modifier.fillMaxWidth())
+
+            // 4. 24-Hour Report Trend
+            AppCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    SectionHeading(text = "24-Hour Report Trend")
+                    SparklineTrendChart(
+                        points = listOf(1f, 3f, 2f, 5f, 4f, 7f, 5f)
+                    )
+                }
+            }
+// 4. 24-Hour Report Trend
+            AppCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    SectionHeading(text = "24-Hour Report Trend")
+                    SparklineTrendChart(
+                        points = listOf(1f, 3f, 2f, 5f, 4f, 7f, 5f)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(32.dp))
         }
-        Spacer(Modifier.height(32.dp))
     }
 }
-
 // ---------------------------------------------------------------------------
 // Admin panel
 // ---------------------------------------------------------------------------
