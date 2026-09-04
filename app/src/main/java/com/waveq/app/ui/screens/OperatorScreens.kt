@@ -327,13 +327,14 @@ val sampleUsers = listOf(
  * horizontal scrolling on a phone is unusable.
  */
 @Composable
-fun AdminScreen(users: List<AdminUser> = sampleUsers) {
-    var tab by remember { mutableIntStateOf(0) }
-    var smsEnabled by remember { mutableStateOf(true) }
-    var ussdEnabled by remember { mutableStateOf(true) }
-    var apiKey by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var ussdCode by remember { mutableStateOf("") }
+@OptIn(ExperimentalMaterial3Api::class)
+fun AdminScreen(initialUsers: List<AdminUser> = sampleUsers) {
+    val users = remember { mutableStateListOf<AdminUser>().apply { addAll(initialUsers) } }
+
+    var showAddDialog by remember { mutableStateOf(false) }
+    var newUserName by remember { mutableStateOf("") }
+    var newUserEmail by remember { mutableStateOf("") }
+    var newUserRole by remember { mutableStateOf("Operator") }
 
     Column(
         modifier = Modifier
@@ -344,170 +345,160 @@ fun AdminScreen(users: List<AdminUser> = sampleUsers) {
         Text("Admin Management Panel", style = AppTypography.headlineMedium, color = TextPrimary)
         Spacer(Modifier.height(6.dp))
         Text(
-            "Manage users, system settings, and monitor system activity",
-            style = AppTypography.bodyMedium, color = TextSecondary,
+            "Manage users and monitor system operators",
+            style = AppTypography.bodyMedium,
+            color = TextSecondary,
         )
         Spacer(Modifier.height(Dimens.sectionSpacing))
 
-        SegmentedTabs(
-            options = listOf("Users", "Settings", "Activity"),
-            selectedIndex = tab,
-            onSelect = { tab = it },
-            icons = listOf(Icons.Filled.Groups, Icons.Filled.Settings, Icons.Filled.MonitorHeart),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // Quick Stats
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CompactStatCard("Total Users", "${users.size}", TextPrimary, Modifier.weight(1f))
+            CompactStatCard("Total Reports", "5", TextPrimary, Modifier.weight(1f))
+            CompactStatCard("System Uptime", "99.8%", TextPrimary, Modifier.weight(1f))
+        }
+
         Spacer(Modifier.height(Dimens.sectionSpacing))
 
-        when (tab) {
-            0 -> {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CompactStatCard("Total Users", "4", TextPrimary, Modifier.weight(1f))
-                    CompactStatCard("Total Reports", "5", TextPrimary, Modifier.weight(1f))
-                    CompactStatCard("System Uptime", "99.8%", TextPrimary, Modifier.weight(1f))
+        // User Management Card
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(Dimens.cardPadding)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SectionHeading("User Management")
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClick = { showAddDialog = true },
+                        shape = RoundedCornerShape(Dimens.cardRadius),
+                        colors = ButtonDefaults.buttonColors(containerColor = ActionBlue),
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add User", style = AppTypography.titleSmall)
+                    }
                 }
+
                 Spacer(Modifier.height(Dimens.sectionSpacing))
-                AppCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(Dimens.cardPadding)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            SectionHeading("User Management")
-                            Spacer(Modifier.weight(1f))
-                            Button(
-                                onClick = { /* TODO: open add-user form */ },
-                                shape = RoundedCornerShape(Dimens.cardRadius),
-                                colors = ButtonDefaults.buttonColors(containerColor = ActionBlue),
-                            ) {
-                                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Add User", style = AppTypography.titleSmall)
-                            }
+
+                users.forEachIndexed { index, u ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Shield,
+                            contentDescription = null,
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(u.name, style = AppTypography.titleSmall, color = TextPrimary)
+                            Text(u.email, style = AppTypography.bodySmall, color = TextSecondary)
                         }
-                        Spacer(Modifier.height(Dimens.sectionSpacing))
-                        users.forEach { u ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Filled.Shield, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(u.name, style = AppTypography.titleSmall, color = TextPrimary)
-                                    Text(u.email, style = AppTypography.bodySmall, color = TextSecondary)
-                                }
-                                StatusPill(u.role, SurfaceMuted, TextSecondary)
-                            }
-                            HorizontalDivider(color = BorderLight)
+                        StatusPill(u.role, SurfaceMuted, TextSecondary)
+
+                        Spacer(Modifier.width(4.dp))
+
+                        // Delete button to remove old users
+                        IconButton(
+                            onClick = { users.removeAt(index) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.DeleteOutline,
+                                contentDescription = "Remove User",
+                                tint = SeverityCritical,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
-                }
-            }
 
-            1 -> {
-                AppCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(Dimens.cardPadding)) {
-                        SectionHeading("Communication Settings")
-                        Spacer(Modifier.height(Dimens.sectionSpacing))
-
-                        ToggleSetting(
-                            title = "SMS Gateway",
-                            subtitle = "Enable SMS-based incident reporting for low connectivity areas",
-                            checked = smsEnabled,
-                            onCheckedChange = { smsEnabled = it },
-                        )
-                        if (smsEnabled) {
-                            IndentedGroup {
-                                LabeledField("SMS Provider", "Twilio", {}, "Select provider")
-                                Spacer(Modifier.height(Dimens.cardSpacing))
-                                LabeledField("API Key", apiKey, { apiKey = it }, "Enter API key")
-                                Spacer(Modifier.height(Dimens.cardSpacing))
-                                LabeledField("Phone Number", phone, { phone = it }, "+1234567890")
-                            }
-                        }
-
-                        Spacer(Modifier.height(Dimens.sectionSpacing))
-                        ToggleSetting(
-                            title = "USSD Gateway",
-                            subtitle = "Enable USSD codes for feature phone compatibility",
-                            checked = ussdEnabled,
-                            onCheckedChange = { ussdEnabled = it },
-                        )
-                        if (ussdEnabled) {
-                            IndentedGroup {
-                                LabeledField("USSD Code", ussdCode, { ussdCode = it }, "*123#")
-                            }
-                        }
-                    }
-                }
-            }
-
-            else -> {
-                AppCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(Dimens.cardPadding)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            SectionHeading("System Activity Logs")
-                            Spacer(Modifier.weight(1f))
-                            OutlinedButton(
-                                onClick = { /* TODO: export */ },
-                                shape = RoundedCornerShape(Dimens.cardRadius),
-                                border = androidx.compose.foundation.BorderStroke(Dimens.borderWidth, BorderLight),
-                            ) {
-                                Text("Export Logs", style = AppTypography.titleSmall, color = TextPrimary)
-                            }
-                        }
-                        Spacer(Modifier.height(Dimens.sectionSpacing))
-                        listOf(
-                            Triple("01/09/2026, 16:59:12", "John Operator", "Incident confirmed"),
-                            Triple("01/09/2026, 16:29:12", "Admin User", "User created"),
-                            Triple("01/09/2026, 15:59:12", "System", "SMS gateway reconnected"),
-                            Triple("01/09/2026, 15:29:12", "System", "Data sync completed"),
-                        ).forEach { (ts, user, action) ->
-                            Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-                                Text(action, style = AppTypography.titleSmall, color = TextPrimary)
-                                Spacer(Modifier.height(2.dp))
-                                Text("$user  ·  $ts", style = AppTypography.bodySmall, color = TextSecondary)
-                            }
-                            HorizontalDivider(color = BorderLight)
-                        }
+                    if (index < users.lastIndex) {
+                        HorizontalDivider(color = BorderLight)
                     }
                 }
             }
         }
+
         Spacer(Modifier.height(32.dp))
     }
-}
 
-@Composable
-private fun ToggleSetting(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = AppTypography.titleSmall, color = TextPrimary)
-            Spacer(Modifier.height(2.dp))
-            Text(subtitle, style = AppTypography.bodySmall, color = TextSecondary)
-        }
-        Spacer(Modifier.width(12.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                // ASSUMPTION: the design's switch reads as near-black when on,
-                // not the brand red. Matched to the screenshot.
-                checkedThumbColor = Color.White,
-                checkedTrackColor = DrawerSelected,
-            ),
+    // Add User Dialog
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = {
+                Text("Add New User", style = AppTypography.headlineSmall, color = TextPrimary)
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newUserName,
+                        onValueChange = { newUserName = it },
+                        label = { Text("Full Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newUserEmail,
+                        onValueChange = { newUserEmail = it },
+                        label = { Text("Email Address") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text("Role", style = AppTypography.labelMedium, color = TextPrimary)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Operator", "Administrator", "Viewer").forEach { role ->
+                            val isSelected = newUserRole == role
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { newUserRole = role },
+                                label = { Text(role, style = AppTypography.labelSmall) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = ActionBlue,
+                                    selectedLabelColor = Surface
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newUserName.isNotBlank() && newUserEmail.isNotBlank()) {
+                            users.add(
+                                AdminUser(
+                                    name = newUserName.trim(),
+                                    email = newUserEmail.trim(),
+                                    role = newUserRole
+                                )
+                            )
+                            newUserName = ""
+                            newUserEmail = ""
+                            newUserRole = "Operator"
+                            showAddDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandRed)
+                ) {
+                    Text("Add", color = Surface)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
         )
-    }
-}
-
-/** The left-bar-indented settings group seen under each toggle in image 14. */
-@Composable
-private fun IndentedGroup(content: @Composable ColumnScope.() -> Unit) {
-    Row(Modifier.padding(top = 14.dp)) {
-        Box(Modifier.width(3.dp).heightIn(min = 40.dp).background(AccentBlue.copy(alpha = 0.4f)))
-        Spacer(Modifier.width(14.dp))
-        Column(content = content)
     }
 }

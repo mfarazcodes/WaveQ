@@ -1,5 +1,13 @@
 package com.waveq.app.ui.screens
-import androidx.compose.ui.draw.clip
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,12 +22,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.CurrentLocationRequest
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import com.waveq.app.ui.components.*
 import com.waveq.app.ui.theme.*
-import kotlinx.coroutines.delay
+import java.util.Locale
 
 private data class DisasterTypeOption(val label: String, val icon: ImageVector)
 
@@ -38,32 +53,116 @@ private enum class ReportSeverity(val label: String, val color: androidx.compose
     CRITICAL("Critical", SeverityCritical),
 }
 
-/**
- * Bottom sheet for submitting a disaster report.
- *
- * ASSUMPTION: there is no real GPS/location wiring or backend/mesh broadcast
- * yet. Location auto-fills with a fake value after a short delay, and
- * "nearby users" is a random number for demo purposes. Replace the
- * LaunchedEffect block with FusedLocationProviderClient, and the onSubmit
- * callback with a real API/mesh call, before this ships.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReportDisasterSheet(
     onDismiss: () -> Unit,
     onSubmit: (type: String, severity: String, location: String, description: String) -> Unit,
 ) {
+    val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     var selectedType by remember { mutableStateOf(disasterTypes.first().label) }
     var selectedSeverity by remember { mutableStateOf(ReportSeverity.MEDIUM) }
-    var location by remember { mutableStateOf("Detecting your location…") }
+    var location by remember { mutableStateOf("Detecting GPS location…") }
     var description by remember { mutableStateOf("") }
-    var autoLocation by remember { mutableStateOf(true) }
+    var isLocating by remember { mutableStateOf(false) }
 
-    LaunchedEffect(autoLocation) {
-        if (autoLocation) {
-            delay(800)
-            location = "Sector 12, Meerut, UP"
+    fun resolveCoordinates(lat: Double, lng: Double) {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                geocoder.getFromLocation(lat, lng, 1) { addresses ->
+                    val addr = addresses.firstOrNull()
+                    if (addr != null) {
+                        val subLocality = addr.subLocality ?: addr.featureName ?: ""
+                        val locality = addr.locality ?: addr.subAdminArea ?: ""
+                        val state = addr.adminArea ?: ""
+                        val parts = listOf(subLocality, locality, state).filter { it.isNotBlank() }
+                        location = if (parts.isNotEmpty()) parts.joinToString(", ") else "$lat, $lng"
+                    } else {
+                        location = "$lat, $lng"
+                    }
+                    isLocating = false
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val addresses = geocoder.getFromLocation(lat, lng, 1)
+                val addr = addresses?.firstOrNull()
+                if (addr != null) {
+                    val subLocality = addr.subLocality ?: addr.featureName ?: ""
+                    val locality = addr.locality ?: addr.subAdminArea ?: ""
+                    val state = addr.adminArea ?: ""
+                    val parts = listOf(subLocality, locality, state).filter { it.isNotBlank() }
+                    location = if (parts.isNotEmpty()) parts.joinToString(", ") else "$lat, $lng"
+                } else {
+                    location = "$lat, $lng"
+                }
+                isLocating = false
+            }
+        } catch (e: Exception) {
+            location = "$lat, $lng"
+            isLocating = false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun requestFreshLocation() {
+        isLocating = true
+        location = "Fetching pinpoint GPS location…"
+        val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+        val cancellationTokenSource = CancellationTokenSource()
+
+        val request = CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+            .setMaxUpdateAgeMillis(5000)
+            .build()
+
+        fusedClient.getCurrentLocation(request, cancellationTokenSource.token)
+            .addOnSuccessListener { loc ->
+                if (loc != null) {
+                    resolveCoordinates(loc.latitude, loc.longitude)
+                } else {
+                    fusedClient.lastLocation.addOnSuccessListener { lastLoc ->
+                        if (lastLoc != null) {
+                            resolveCoordinates(lastLoc.latitude, lastLoc.longitude)
+                        } else {
+                            location = "Unable to get GPS. Enter manually."
+                            isLocating = false
+                        }
+                    }
+                }
+            }
+            .addOnFailureListener {
+                location = "Location lookup failed. Enter manually."
+                isLocating = false
+            }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val fineGranted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        val coarseGranted = perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (fineGranted || coarseGranted) {
+            requestFreshLocation()
+        } else {
+            location = "Location permission denied. Enter manually."
+            isLocating = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val fineCheck = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+        if (fineCheck == PackageManager.PERMISSION_GRANTED) {
+            requestFreshLocation()
+        } else {
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
     }
 
@@ -131,17 +230,26 @@ fun ReportDisasterSheet(
             }
 
             Spacer(Modifier.height(Dimens.sectionSpacing))
-            Text("Location", style = AppTypography.labelLarge, color = TextPrimary)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Location", style = AppTypography.labelLarge, color = TextPrimary)
+                if (isLocating) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = BrandRed)
+                }
+            }
             Spacer(Modifier.height(8.dp))
             LabeledField(
                 label = "",
                 value = location,
-                onValueChange = { location = it; autoLocation = false },
+                onValueChange = { location = it },
                 placeholder = "Enter location manually",
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Using your device's approximate location. Edit above if it's wrong.",
+                "Auto-detected via high-accuracy GPS. Tap to edit manually.",
                 style = AppTypography.bodySmall,
                 color = TextTertiary,
             )

@@ -50,6 +50,8 @@ fun AppRoot() {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
+    var userEmail by remember { mutableStateOf("") }
+
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val showChrome = currentRoute != null && currentRoute != Routes.LOGIN
@@ -66,6 +68,7 @@ fun AppRoot() {
                 ) {
                     AppDrawer(
                         currentRoute = currentRoute,
+                        accountEmail = userEmail.ifBlank { "user@example.com" },
                         onNavigate = { route ->
                             scope.launch { drawerState.close() }
                             navController.navigate(route) {
@@ -75,6 +78,7 @@ fun AppRoot() {
                         },
                         onLogout = {
                             scope.launch { drawerState.close() }
+                            userEmail = ""
                             navController.navigate(Routes.LOGIN) {
                                 popUpTo(0) { inclusive = true }
                             }
@@ -95,7 +99,10 @@ fun AppRoot() {
                     },
                 ) { padding ->
                     Box(Modifier.padding(padding)) {
-                        AppNavHost(navController)
+                        AppNavHost(
+                            navController = navController,
+                            onUserLoggedIn = { email -> userEmail = email }
+                        )
                     }
                 }
             }
@@ -104,17 +111,23 @@ fun AppRoot() {
 }
 
 @Composable
-private fun AppNavHost(navController: NavHostController) {
+private fun AppNavHost(
+    navController: NavHostController,
+    onUserLoggedIn: (String) -> Unit,
+) {
     NavHost(navController = navController, startDestination = Routes.LOGIN) {
         composable(Routes.LOGIN) {
             LoginScreen(
-                onSignIn = { _, _ ->
+                onSignIn = { email, _ ->
+                    onUserLoggedIn(email)
                     navController.navigate(Routes.HOME) { popUpTo(Routes.LOGIN) { inclusive = true } }
                 },
                 onDemoCitizen = {
+                    onUserLoggedIn("citizen@waveq.org")
                     navController.navigate(Routes.PUBLIC) { popUpTo(Routes.LOGIN) { inclusive = true } }
                 },
                 onDemoOperator = {
+                    onUserLoggedIn("operator@emergency.gov")
                     navController.navigate(Routes.HOME) { popUpTo(Routes.LOGIN) { inclusive = true } }
                 },
             )
@@ -141,8 +154,8 @@ private fun AppDrawer(
     currentRoute: String?,
     onNavigate: (String) -> Unit,
     onLogout: () -> Unit,
-    accountName: String = "Operator Account",
-    accountEmail: String = "demo@example.com",
+    accountName: String = "Your Account",
+    accountEmail: String = "user@example.com",
 ) {
     ModalDrawerSheet(
         drawerContainerColor = Surface,
