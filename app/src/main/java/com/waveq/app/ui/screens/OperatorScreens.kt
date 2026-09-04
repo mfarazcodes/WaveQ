@@ -210,7 +210,10 @@ fun OperatorDashboardScreen(incidents: List<Incident> = sampleIncidents) {
         Spacer(Modifier.height(Dimens.sectionSpacing))
 
         if (tab == 0) {
-            MapPlaceholder(activeIncidents = incidents.size)
+            CrisisMapView(
+                activeIncidentsCount = incidents.size,
+                incidents = incidents
+            )
             Spacer(Modifier.height(Dimens.sectionSpacing))
             SectionHeading("Incident Reports")
             Spacer(Modifier.height(6.dp))

@@ -7,11 +7,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.waveq.app.ui.components.*
 import com.waveq.app.ui.theme.*
-
 @Composable
 fun HomeScreen(
     userName: String = "Operator",
@@ -113,6 +116,8 @@ fun HomeScreen(
 
 @Composable
 fun ReportIncidentScreen(onReportDisaster: () -> Unit) {
+    var showSheet by remember { mutableStateOf(false) }
+    var showConfirmation by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -140,7 +145,7 @@ fun ReportIncidentScreen(onReportDisaster: () -> Unit) {
 
         PrimaryButton(
             text = "Report Disaster",
-            onClick = onReportDisaster,
+            onClick = { showSheet = true },
             leadingIcon = Icons.Filled.Error,
             modifier = Modifier.height(76.dp),
         )
@@ -159,6 +164,21 @@ fun ReportIncidentScreen(onReportDisaster: () -> Unit) {
             )
         }
         Spacer(Modifier.height(32.dp))
+    }
+    if (showSheet) {
+        ReportDisasterSheet(
+            onDismiss = { showSheet = false },
+            onSubmit = { _, _, _, _ ->
+                showSheet = false
+                showConfirmation = true
+            },
+        )
+    }
+    if (showConfirmation) {
+        ReportSubmittedDialog(
+            nearbyCount = (8..40).random(),
+            onDismiss = { showConfirmation = false },
+        )
     }
 }
 
@@ -215,7 +235,10 @@ fun PublicCrisisScreen(emergencyNumber: String = "112") {
         CompactStatCard("Last Updated", "16:59:12", TextPrimary, Modifier.fillMaxWidth())
 
         Spacer(Modifier.height(Dimens.sectionSpacing))
-        MapPlaceholder(activeIncidents = 4)
+        CrisisMapView(
+            activeIncidentsCount = 4,
+            incidents = sampleIncidents
+        )
         Spacer(Modifier.height(32.dp))
     }
 }

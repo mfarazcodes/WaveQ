@@ -127,7 +127,7 @@ fun DisasterTopBar(onMenuClick: () -> Unit, modifier: Modifier = Modifier) {
         ) {
             AlertLogo()
             Spacer(Modifier.width(10.dp))
-            Text("Disaster Report", style = WordmarkStyle, color = BrandRed)
+            Text("WaveQ", style = WordmarkStyle, color = BrandRed)
             Spacer(Modifier.weight(1f))
             Box(
                 modifier = Modifier
