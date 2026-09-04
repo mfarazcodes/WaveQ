@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -32,6 +34,7 @@ object Routes {
     const val OPERATOR = "operator"
     const val PUBLIC = "public"
     const val ADMIN = "admin"
+    const val EVACUATION_MAP = "evacuation_map"
 }
 
 private data class DrawerItem(val route: String, val label: String, val icon: ImageVector)
@@ -39,6 +42,7 @@ private data class DrawerItem(val route: String, val label: String, val icon: Im
 private val drawerItems = listOf(
     DrawerItem(Routes.HOME, "Home", Icons.Filled.Home),
     DrawerItem(Routes.REPORT, "Report Incident", Icons.Filled.Error),
+    DrawerItem(Routes.EVACUATION_MAP, "Evacuation Map", Icons.AutoMirrored.Filled.DirectionsRun),
     DrawerItem(Routes.OPERATOR, "Operator Dashboard", Icons.Filled.Groups),
     DrawerItem(Routes.PUBLIC, "Public View", Icons.Filled.Shield),
     DrawerItem(Routes.ADMIN, "Admin Panel", Icons.Filled.Settings),
@@ -70,17 +74,24 @@ fun AppRoot() {
                         currentRoute = currentRoute,
                         accountEmail = userEmail.ifBlank { "user@example.com" },
                         onNavigate = { route ->
-                            scope.launch { drawerState.close() }
-                            navController.navigate(route) {
-                                launchSingleTop = true
-                                popUpTo(Routes.HOME)
+                            scope.launch {
+                                drawerState.close()
+                                navController.navigate(route) {
+                                    launchSingleTop = true
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    restoreState = true
+                                }
                             }
                         },
                         onLogout = {
-                            scope.launch { drawerState.close() }
-                            userEmail = ""
-                            navController.navigate(Routes.LOGIN) {
-                                popUpTo(0) { inclusive = true }
+                            scope.launch {
+                                drawerState.close()
+                                userEmail = ""
+                                navController.navigate(Routes.LOGIN) {
+                                    popUpTo(0) { inclusive = true }
+                                }
                             }
                         },
                     )
@@ -138,10 +149,16 @@ private fun AppNavHost(
                 onOperatorDashboard = { navController.navigate(Routes.OPERATOR) },
                 onPublicView = { navController.navigate(Routes.PUBLIC) },
                 onAdminPanel = { navController.navigate(Routes.ADMIN) },
+                onEvacuationMap = { navController.navigate(Routes.EVACUATION_MAP) },
             )
         }
         composable(Routes.REPORT) {
             ReportIncidentScreen(onReportDisaster = { })
+        }
+        composable(Routes.EVACUATION_MAP) {
+            EvacuationMapScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
         }
         composable(Routes.OPERATOR) { OperatorDashboardScreen() }
         composable(Routes.PUBLIC) { PublicCrisisScreen() }

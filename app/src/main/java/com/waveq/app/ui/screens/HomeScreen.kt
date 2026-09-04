@@ -1,20 +1,37 @@
 package com.waveq.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.google.android.gms.location.LocationServices
+import com.waveq.app.data.local.IncidentEntity
+import com.waveq.app.data.local.WaveQDatabase
+import com.waveq.app.data.sync.IncidentSyncWorker
+import com.waveq.app.model.defaultSafeZones
 import com.waveq.app.ui.components.*
 import com.waveq.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
+
 @Composable
 fun HomeScreen(
     userName: String = "Operator",
@@ -22,7 +39,32 @@ fun HomeScreen(
     onOperatorDashboard: () -> Unit,
     onPublicView: () -> Unit,
     onAdminPanel: () -> Unit,
+    onEvacuationMap: () -> Unit = {},
 ) {
+    val context = LocalContext.current
+    var userLatitude by remember { mutableStateOf<Double?>(null) }
+    var userLongitude by remember { mutableStateOf<Double?>(null) }
+
+    LaunchedEffect(Unit) {
+        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+        try {
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    userLatitude = loc.latitude
+                    userLongitude = loc.longitude
+                }
+            }
+        } catch (_: SecurityException) {}
+    }
+
+    val nearestShelter = remember(userLatitude, userLongitude) {
+        if (userLatitude != null && userLongitude != null) {
+            defaultSafeZones.minByOrNull { it.distanceTo(userLatitude!!, userLongitude!!) }
+        } else {
+            defaultSafeZones.first()
+        } ?: defaultSafeZones.first()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -42,7 +84,7 @@ fun HomeScreen(
                 modifier = Modifier.weight(1f),
             )
             StatCard(
-                icon = Icons.Filled.TrendingUp, iconTint = AccentAmber, background = AccentAmberTint,
+                icon = Icons.AutoMirrored.Filled.TrendingUp, iconTint = AccentAmber, background = AccentAmberTint,
                 value = "2", caption = "High Priority",
                 badge = { SeverityBadge(Severity.HIGH) },
                 modifier = Modifier.weight(1f),
@@ -63,6 +105,21 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(Dimens.sectionSpacing))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onEvacuationMap)
+        ) {
+            NearestSafeZoneCard(
+                safeZone = nearestShelter,
+                userLat = userLatitude,
+                userLng = userLongitude
+            )
+        }
+
+        Spacer(Modifier.height(Dimens.sectionSpacing))
         SectionHeading("Quick Actions")
         Spacer(Modifier.height(Dimens.cardSpacing))
 
@@ -72,8 +129,13 @@ fun HomeScreen(
         )
         Spacer(Modifier.height(Dimens.cardSpacing))
         ActionRowCard(
+            Icons.Filled.DirectionsRun, AccentGreen, TileGreen,
+            "Evacuation Map & Route", "Real-time shelters & safe path", onEvacuationMap,
+        )
+        Spacer(Modifier.height(Dimens.cardSpacing))
+        ActionRowCard(
             Icons.Filled.Groups, AccentBlue, TileBlue,
-            "Operator Dashboard", "Validate incident reports", onOperatorDashboard,
+            "Operator Dashboard", "Triage and verify incident reports", onOperatorDashboard,
         )
         Spacer(Modifier.height(Dimens.cardSpacing))
         ActionRowCard(
@@ -115,15 +177,18 @@ fun HomeScreen(
 }
 
 @Composable
-fun ReportIncidentScreen(onReportDisaster: () -> Unit) {
+fun ReportIncidentScreen(onReportDisaster: () -> Unit = {}) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var showSheet by remember { mutableStateOf(false) }
     var showConfirmation by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(Dimens.screenPadding),
-        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(32.dp))
         AlertLogo(size = 64.dp)
@@ -158,27 +223,101 @@ fun ReportIncidentScreen(onReportDisaster: () -> Unit) {
                 Modifier.weight(1f),
             )
             InfoTile(
-                "Accessible",
-                "Works with low connectivity via SMS/USSD in areas with limited internet",
+                "Offline Ready",
+                "Saves reports locally on device and syncs automatically when network reconnects",
                 Modifier.weight(1f),
             )
         }
         Spacer(Modifier.height(32.dp))
     }
+
     if (showSheet) {
         ReportDisasterSheet(
             onDismiss = { showSheet = false },
-            onSubmit = { _, _, _, _ ->
+            onSubmit = { type, severity, location, description ->
                 showSheet = false
                 showConfirmation = true
+
+                scope.launch(Dispatchers.IO) {
+                    val dao = WaveQDatabase.getDatabase(context).incidentDao()
+                    val timestamp = SimpleDateFormat("dd/MM/yyyy, HH:mm:ss", Locale.getDefault()).format(Date())
+                    val id = "INC-${System.currentTimeMillis().toString().takeLast(4)}"
+
+                    dao.insertIncident(
+                        IncidentEntity(
+                            id = id,
+                            type = type,
+                            location = location,
+                            description = description,
+                            severity = severity,
+                            reportedAt = timestamp,
+                            verified = false,
+                            isSynced = false
+                        )
+                    )
+
+                    val constraints = Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+
+                    val syncRequest = OneTimeWorkRequestBuilder<IncidentSyncWorker>()
+                        .setConstraints(constraints)
+                        .build()
+
+                    WorkManager.getInstance(context).enqueue(syncRequest)
+                }
             },
         )
     }
+
     if (showConfirmation) {
         ReportSubmittedDialog(
-            nearbyCount = (8..40).random(),
-            onDismiss = { showConfirmation = false },
+            onDismiss = { showConfirmation = false }
         )
+    }
+}
+
+@Composable
+fun ReportSubmittedDialog(
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth().padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = AccentGreen,
+                    modifier = Modifier.size(56.dp)
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = "Report Submitted",
+                    style = AppTypography.headlineSmall,
+                    color = TextPrimary
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Your emergency incident has been recorded locally and will sync automatically.",
+                    style = AppTypography.bodyMedium,
+                    color = TextSecondary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                PrimaryButton(
+                    text = "Done",
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
     }
 }
 
@@ -201,8 +340,8 @@ fun PublicCrisisScreen(emergencyNumber: String = "112") {
             .verticalScroll(rememberScrollState())
             .padding(Dimens.screenPadding),
     ) {
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            androidx.compose.material3.Icon(
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
                 Icons.Filled.Shield, contentDescription = null,
                 tint = AccentBlue, modifier = Modifier.size(24.dp),
             )
