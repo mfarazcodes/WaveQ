@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Release configuration: no cleartext, except to the loopback addresses used
+    by tooling.
+
+    ## Why there is no exemption for the water-level probe here
+
+    The probe serves plain HTTP and its LAN address is DHCP-assigned, so it
+    cannot be named ahead of time. Android's network-security-config cannot
+    express "permit cleartext on the local network": <domain> values are
+    matched as hostnames, exact or by suffix, and CIDR notation is not
+    supported. An earlier version of this file listed "10.0.0.0/8",
+    "172.16.0.0/12", "192.168.0.0/16" and "169.254.0.0/16" as <domain> entries.
+    They parsed, they shipped, and they matched nothing - every sensor request
+    was blocked by base-config below while looking, from the code's side, like
+    an unreachable sensor.
+
+    A release build that needs the probe therefore has to do one of:
+
+      - serve the reading over HTTPS from the probe or a local gateway;
+      - bake the sensor's address in at build time (a static DHCP reservation
+        plus a <domain> entry generated into this file), which fixes the
+        deployment to one address; or
+      - ship usesCleartextTraffic / a permissive base-config, which would also
+        downgrade the Open-Meteo calls in prediction/DataSources and every
+        other request the app makes. That is not an acceptable trade for one
+        endpoint.
+
+    Debug builds get a permissive base-config from
+    src/debug/res/xml/network_security_config.xml, which overrides this file by
+    resource merging for the debug variant only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <!--
+        Loopback only. These are real hostname matches, unlike the CIDR entries
+        that used to sit here, and they cover an adb-forwarded port or an
+        on-device emulator gateway.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

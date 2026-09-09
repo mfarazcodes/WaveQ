@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Themed-icon layer (Android 13+).
+
+    The launcher discards this drawable's colour entirely and re-tints its opaque
+    pixels to match the wallpaper, so only the alpha channel survives. That is
+    why this is a purpose-built silhouette rather than a reference to
+    ic_launcher_foreground: that drawable is filled with gradients and thin
+    strokes, and once flattened to a single tint it reads as a shapeless blob.
+
+    Rules this file follows, and any replacement must too:
+      - one solid path, no gradients, no strokes, no semi-transparent fills;
+      - counters (the exclamation mark) are knocked out with fillType="evenOdd",
+        so they show the wallpaper through rather than being drawn in a second
+        colour that would not survive tinting;
+      - everything inside the 66dp safe zone of the 108dp canvas (a circle of
+        radius 30 centred at 54,54), so no launcher mask can clip it.
+
+    Android has no separate light and dark launcher icons - there is no system
+    signal for it and no resource qualifier. This layer IS the mechanism: the
+    launcher tints it appropriately for whatever wallpaper is behind it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M54,24
+                          a30,30 0 1,0 0.01,0 z
+                          M49.5,36.5
+                          l9,0
+                          l-1.6,25
+                          l-5.8,0
+                          z
+                          M54,66.5
+                          a5,5 0 1,0 0.01,0 z" />
+</vector>

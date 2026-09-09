@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG ONLY. THIS MUST NEVER BE WHAT SHIPS.
+
+    This file exists solely so a debug build can reach the NodeMCU water-level
+    probe, which:
+
+      - cannot do TLS, so it serves plain HTTP and nothing else, and
+      - has a DHCP-assigned LAN address that changes between sessions, so its
+        host is not known when this file is written.
+
+    Those two facts together are why this is a blanket permit rather than a
+    scoped one. Android's network-security-config matches <domain> entries as
+    hostnames - exact, or by suffix with includeSubdomains - and has no syntax
+    for an IP range. The previous version of the release config listed
+    "10.0.0.0/8" and friends as <domain> values; those were treated as literal
+    domain strings, matched nothing, and left base-config's
+    cleartextTrafficPermitted="false" in force. That is what blocked the sensor
+    request inside the app while the phone's browser reached the same URL
+    fine.
+
+    The release config in src/main stays strict and is NOT overridden by this.
+    Resource merging picks the debug source set only for debug builds; see the
+    note in src/main/res/xml/network_security_config.xml for what a release
+    build would need instead.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
