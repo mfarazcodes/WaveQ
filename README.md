@@ -42,17 +42,19 @@ In mountainous and hilly terrains, torrential rain causes sudden, violent flash 
 * Uses **OSMDroid (OpenStreetMap)** for mapping, eliminating proprietary map API billing and enabling offline raster/vector tile caching[cite: 2].
 
 ---
-
 ## 🏗️ System Architecture
 
-```mermaid
-flowchart TD
-    A["📡 Open-Meteo Forecast & River Data"] --> C["⚙️ WaveQ Risk Engine & Surge Detector"]
-    B["🌊 ESP8266 Riverbank IoT Sensor"] --> C
-
-    C --> D[("💾 Room SQLite Database (Local Cache)")]
-
-    D --> E["☁️ WorkManager (Cloud Sync on Reconnect)"]
-    D --> F["📲 Google Nearby Connections (P2P Mesh Relay)"]
-    D --> G["🚨 Critical Alert Takeover & Hardware Siren"]
-    D --> H["🗺️ OSMDroid Offline Evacuation Map"]
+```text
+       📡 Open-Meteo Forecast & River Data       🌊 ESP8266 Riverbank IoT Sensor
+                        │                                      │
+                        └──────────────────┬───────────────────┘
+                                           ▼
+                       ⚙️ WaveQ Risk Engine & Surge Detector
+                                           │
+                                           ▼
+                      💾 Room SQLite Database (Local Cache)
+                                           │
+        ┌──────────────────┬───────────────┴───────────────┬──────────────────┐
+        ▼                  ▼                               ▼                  ▼
+☁️ WorkManager     📲 Nearby Connections           🚨 Critical Siren   🗺️ OSMDroid Map
+  (Cloud Sync)         (P2P Mesh Relay)               (Lock Override)     (Offline Nav)
