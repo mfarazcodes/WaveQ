@@ -44,3 +44,15 @@ In mountainous and hilly terrains, torrential rain causes sudden, violent flash 
 ---
 
 ## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    A["📡 Open-Meteo Forecast & River Data"] --> C["⚙️ WaveQ Risk Engine & Surge Detector"]
+    B["🌊 ESP8266 Riverbank IoT Sensor"] --> C
+
+    C --> D[("💾 Room SQLite Database (Local Cache)")]
+
+    D --> E["☁️ WorkManager (Cloud Sync on Reconnect)"]
+    D --> F["📲 Google Nearby Connections (P2P Mesh Relay)"]
+    D --> G["🚨 Critical Alert Takeover & Hardware Siren"]
+    D --> H["🗺️ OSMDroid Offline Evacuation Map"]
