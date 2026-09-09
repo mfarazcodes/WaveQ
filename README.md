@@ -42,19 +42,25 @@ In mountainous and hilly terrains, torrential rain causes sudden, violent flash 
 * Uses **OSMDroid (OpenStreetMap)** for mapping, eliminating proprietary map API billing and enabling offline raster/vector tile caching[cite: 2].
 
 ---
+
 ## 🏗️ System Architecture
 
+WaveQ operates on an **Offline-First Triangular Architecture** designed for zero-infrastructure resilience:
+
+
 ```text
-       📡 Open-Meteo Forecast & River Data       🌊 ESP8266 Riverbank IoT Sensor
-                        │                                      │
-                        └──────────────────┬───────────────────┘
-                                           ▼
-                       ⚙️ WaveQ Risk Engine & Surge Detector
-                                           │
-                                           ▼
-                      💾 Room SQLite Database (Local Cache)
-                                           │
-        ┌──────────────────┬───────────────┴───────────────┬──────────────────┐
-        ▼                  ▼                               ▼                  ▼
-☁️ WorkManager     📲 Nearby Connections           🚨 Critical Siren   🗺️ OSMDroid Map
-  (Cloud Sync)         (P2P Mesh Relay)               (Lock Override)     (Offline Nav)
+  [ Open-Meteo Forecast & River Data ]     [ ESP8266 Riverbank IoT Sensor ]
+                   |                                      |
+                   +------------------+-------------------+
+                                      |
+                                      v
+                   [ WaveQ Risk Engine & Surge Detector ]
+                                      |
+                                      v
+                   [ Room SQLite Database (Local Cache) ]
+                                      |
+         +-------------------+--------+--------+-------------------+
+         |                   |                 |                   |
+         v                   v                 v                   v
+   [ WorkManager ]   [ Nearby Mesh ]   [ Critical Siren ]   [ OSMDroid Map ]
+    (Cloud Sync)       (P2P Relay)       (Lock Override)      (Offline Nav)
