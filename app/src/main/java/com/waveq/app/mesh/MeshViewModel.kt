@@ -3,6 +3,8 @@ package com.waveq.app.mesh
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.waveq.app.auth.SessionManager
+import com.waveq.app.auth.UserRole
 import com.waveq.app.data.IncidentWire
 import com.waveq.app.data.local.IncidentEntity
 import com.waveq.app.data.verificationAnnouncement
@@ -44,6 +46,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         MeshSession.init(application)
+        SessionManager.init(application)
     }
 
     val myDeviceId: String get() = MeshSession.myDeviceId
@@ -62,15 +65,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     private val meshManager = MeshSession.meshManager
     private val voiceRecorder = VoiceRecorder()
 
-    /**
-     * The transport's own state flow, mirrored straight through.
-     *
-     * Replaces the previous single-slot `onPeerCountChanged`/`onRunningChanged`
-     * callbacks, which a second ViewModel would silently steal, and which had to
-     * be seeded by hand because a callback only fires on change - so a mesh
-     * already started by SosBeaconService reported zero peers until something
-     * happened to move.
-     */
     val transportStatus: StateFlow<TransportStatus> = MeshSession.transport.status
 
     val isRunning: StateFlow<Boolean> = transportStatus
@@ -92,27 +86,26 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val sosBeacons: StateFlow<Map<String, SosBeaconRecord>> = _sosBeacons
 
     private val _carryingStats = MutableStateFlow(MessageStore.StoreStats(totalCount = 0, sosCount = 0))
-    /** What this device is currently carrying for store-and-forward delivery to peers met later. */
     val carryingStats: StateFlow<MessageStore.StoreStats> = _carryingStats
 
     private val _relayActivity = MutableStateFlow<List<RelayActivityEntry>>(emptyList())
-    /** Recent relay events (newest first), so store-and-forward behaviour is visible in the UI. */
     val relayActivity: StateFlow<List<RelayActivityEntry>> = _relayActivity
 
     init {
         channelRepository.ensureDefaultCityChannel()
         refreshChannels()
 
-        // Envelope routing is wired once, process-wide, in MeshSession.init.
-        // Transport state is observed through transport.status rather than
-        // assigned callbacks, so two ViewModels cannot clobber each other.
-
-        // These collectors are UI state only. Sounding the siren, posting the
-        // alert notification and launching the full-screen takeover all happen
-        // in MeshAlertDispatcher on the process-scoped session instead, so they
-        // still fire when this ViewModel (and its Activity) no longer exists.
         viewModelScope.launch {
             meshManager.incomingMessages.collect { message ->
+                val currentRole = SessionManager.currentRole ?: UserRole.CITIZEN
+
+                // Only operators and admins see RESPONDERS_ONLY alerts (citizen distress)
+                if (message.targetScope == AlertScope.RESPONDERS_ONLY &&
+                    currentRole != UserRole.OPERATOR && currentRole != UserRole.ADMIN
+                ) {
+                    return@collect
+                }
+
                 _messagesByChannel.update { current ->
                     val updated = (current[message.channelId] ?: emptyList()) + message
                     current + (message.channelId to updated)
@@ -122,7 +115,14 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             meshManager.incomingSosBeacons.collect { beacon ->
+                val currentRole = SessionManager.currentRole ?: UserRole.CITIZEN
                 val isMine = beacon.senderId == myDeviceId
+
+                // Only show other peers' SOS beacons if we are an Operator or Admin, or it is our own beacon
+                if (!isMine && currentRole != UserRole.OPERATOR && currentRole != UserRole.ADMIN) {
+                    return@collect
+                }
+
                 _sosBeacons.update { current ->
                     current + (beacon.beaconId to SosBeaconRecord(beacon, System.currentTimeMillis(), isMine))
                 }
@@ -162,12 +162,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         MeshForegroundService.stop(getApplication())
     }
 
-    /**
-     * Forces a fresh advertise/discover sweep.
-     *
-     * Nearby has no "look again" call, and a discovery session that has quietly
-     * stalled is otherwise unrecoverable from the UI.
-     */
     fun rescanMesh() {
         if (!isRunning.value) {
             startMesh()
@@ -187,17 +181,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return Result.success(channel)
     }
 
-    /**
-     * Suspends: joining derives a 120k-round PBKDF2 key, which is hundreds of
-     * milliseconds to seconds of CPU and must never run on the main thread.
-     * Callers are expected to show a loading state for the duration.
-     */
-    /**
-     * Leaves a family channel and forgets its key.
-     *
-     * Local only. Messages this device already relayed are out in the mesh and
-     * on other devices' stores; leaving cannot recall them, and the UI says so.
-     */
     fun leaveChannel(channelId: String): Boolean {
         val left = channelRepository.leaveChannel(channelId)
         if (left) {
@@ -207,14 +190,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return left
     }
 
-    /**
-     * Creating and joining a family channel are the same derivation - the
-     * channel id and key both come deterministically from the passphrase, so
-     * "create" and "join" differ only in what the user is told, not in what
-     * happens. They are separate entry points because the two intentions carry
-     * different risks: someone creating a group is choosing a secret that
-     * everyone they share it with can read the group with, forever.
-     */
     suspend fun createFamilyChannel(passphrase: String): Result<ChannelMeta> =
         joinFamilyChannel(passphrase)
 
@@ -235,43 +210,39 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             text = text,
             audioFileName = null,
             timestamp = System.currentTimeMillis(),
+            targetScope = AlertScope.ALL_PEERS,
         )
         meshManager.sendMessage(channelId, payload)
     }
 
     /**
-     * Broadcasts an authoritative flood alert. UI-side convenience only - the
-     * gate that actually matters is in [MeshManager.sendMessage] itself, which
-     * refuses a FLOOD_ALERT payload outright unless the session role is
-     * OPERATOR/ADMIN, regardless of what called it.
+     * Broadcasts an authoritative flood alert with cryptographic signature and role stamp.
      */
-    fun sendFloodAlert(channelId: String, severity: Severity, text: String) {
-        if (text.isBlank()) return
+    fun sendFloodAlert(
+        channelId: String,
+        severity: Severity,
+        message: String,
+        signature: ByteArray? = null,
+        signerRole: String? = null
+    ) {
+        if (message.isBlank()) return
         val payload = MeshPayload(
             senderId = myDeviceId,
             senderName = senderName.value,
             type = MessageType.FLOOD_ALERT,
-            text = text,
+            text = message,
             audioFileName = null,
             timestamp = System.currentTimeMillis(),
             severity = severity.name,
+            targetScope = AlertScope.ALL_PEERS,
+            signature = signature,
+            signerRole = signerRole
         )
         meshManager.sendMessage(channelId, payload)
     }
 
     /**
-     * Relays a citizen incident report to nearby devices as a TEXT message on
-     * the public city channel.
-     *
-     * Deliberately NOT a FLOOD_ALERT: an alert is an authoritative warning that
-     * fires sirens and is restricted to operators. A citizen report is an
-     * observation, and it must reach the mesh without needing an operator role.
-     *
-     * Returns the number of peers the envelope was actually dispatched to, as
-     * reported by the transport at the moment of the send - not a separately
-     * maintained peer counter, which could be stale in either direction. Nearby's
-     * send is fire-and-forget, so this is "handed to N peers", not "confirmed
-     * delivered to N peers" - do not present it as a delivery receipt.
+     * Relays a citizen incident report. Citizens send observations marked as ALL_PEERS (chat text).
      */
     fun broadcastIncidentReport(
         referenceId: String,
@@ -283,9 +254,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         longitude: Double? = null,
         reportedAtMillis: Long = System.currentTimeMillis(),
     ): Int {
-        // `severity` arrives as a Severity enum name (the canonical stored form).
-        // Render the human label in the relayed text, falling back to the raw
-        // value if a future sender uses something this build does not know.
         val severityLabel = Severity.entries.firstOrNull { it.name == severity }?.label ?: severity
         val body = buildString {
             append("[Report $referenceId] ")
@@ -306,9 +274,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             text = body,
             audioFileName = null,
             timestamp = System.currentTimeMillis(),
-            // The same report in machine-readable form, coordinates included.
-            // The prose above is for humans reading the chat; receivers store
-            // from this.
+            targetScope = AlertScope.ALL_PEERS,
             incidentJson = IncidentWire(
                 id = referenceId,
                 type = type,
@@ -325,29 +291,29 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Announces that an operator has confirmed a citizen report.
-     *
-     * Sent as a FLOOD_ALERT, not TEXT: this is an authoritative statement, and
-     * MeshManager's role gate refuses it outright unless the session is
-     * OPERATOR/ADMIN - so a citizen build cannot manufacture a confirmation even
-     * by calling this directly. Severity is the report's own, so only a CRITICAL
-     * report reaches the siren path on receiving devices; anything lower arrives
-     * as an ordinary alert.
-     *
-     * The body carries the original reference id, which is what lets receivers
-     * mark the report they already hold as verified instead of duplicating it.
+     * Signs with operator private key if available.
      */
     fun broadcastVerification(incident: IncidentEntity): Int {
+        val textBody = verificationAnnouncement(incident.id, incident.type, incident.location)
+        val now = System.currentTimeMillis()
+        val currentRole = SessionManager.currentRole ?: UserRole.OPERATOR
+
+        val signature = SessionManager.getOperatorPrivateKey()?.let { privKey ->
+            val payloadBytes = "${incident.severity}:$textBody:$now".toByteArray(Charsets.UTF_8)
+            ChannelCrypto.signPayload(payloadBytes, privKey)
+        }
+
         val payload = MeshPayload(
             senderId = myDeviceId,
             senderName = senderName.value,
             type = MessageType.FLOOD_ALERT,
-            text = verificationAnnouncement(incident.id, incident.type, incident.location),
+            text = textBody,
             audioFileName = null,
-            timestamp = System.currentTimeMillis(),
+            timestamp = now,
             severity = incident.severity,
-            // Carries the location as a discrete field rather than only inside
-            // the sentence above, so the alert UI can put a place name in the
-            // place-name row instead of the whole announcement.
+            targetScope = AlertScope.ALL_PEERS,
+            signature = signature,
+            signerRole = currentRole.name,
             incidentJson = IncidentWire.fromEntity(incident, verifiedBy = incident.verifiedBy).toJson(),
         )
         return meshManager.sendMessage(channelRepository.cityChannelId(), payload)
@@ -355,11 +321,6 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVoiceRecording(): File = voiceRecorder.startRecording(getApplication())
 
-    /**
-     * Stops recording and sends the clip. Returns false when the recording
-     * could not be finalised or read back - the caller should surface that
-     * rather than leaving the user believing a voice note went out.
-     */
     fun stopVoiceRecordingAndSend(channelId: String): Boolean {
         val file = voiceRecorder.stopRecording() ?: return false
         val audioBytes = try {
@@ -376,23 +337,20 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             text = null,
             audioFileName = file.name,
             timestamp = System.currentTimeMillis(),
+            targetScope = AlertScope.ALL_PEERS,
         )
         meshManager.sendMessage(channelId, payload, audioBytes = audioBytes)
         return true
     }
 
-    /** Prefer [SosBeaconService] for a real SOS session - it keeps repeating with the screen off. */
+    /** SOS beacon dispatch with responder-only routing */
     fun sendSosBeacon(beacon: SosBeacon) = meshManager.sendSosBeacon(beacon)
 
-    /** Called after cancelling our own SOS so the UI drops back to idle instead of showing the last-known beacon forever. */
     fun clearMySosBeacon() {
         _sosBeacons.update { current -> current.filterNot { it.value.isMine } }
     }
 
     override fun onCleared() {
-        // transport is process-wide (MeshSession) and may still be carrying an
-        // active SosBeaconService broadcast - do not stop it just because this
-        // ViewModel's owner (the Activity) went away.
         super.onCleared()
     }
 }

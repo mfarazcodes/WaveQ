@@ -22,68 +22,26 @@ private const val SEEN_BEACON_CAPACITY = 500
 private const val SOS_MAX_HOPS = 12
 private const val DEFAULT_MAX_HOPS = 5
 
-/**
- * Risk updates travel as far as SOS beacons do. A device that fetched a
- * forecast is often the only one in a wide area with connectivity, so its
- * assessment has to reach well beyond its immediate neighbours to be worth
- * anything - the whole point is reaching devices that could never fetch it.
- */
 const val RISK_UPDATE_MAX_HOPS = 12
-
-/**
- * Sensor alerts travel as far as risk updates and SOS beacons do.
- *
- * The chat default of 5 is wrong for this: a bridging device is often the only
- * one in the area on the sensor's Wi-Fi, and the phones that most need the
- * warning are the ones furthest from any infrastructure. This is an
- * authoritative hazard alert, so it crosses the whole cluster.
- */
-const val SENSOR_ALERT_MAX_HOPS = 12
 private const val STORE_REPLAY_THROTTLE_MS = 150L
 
-/**
- * Receive-path rate limit, per endpoint.
- *
- * Sized against the busiest legitimate traffic this app produces: a
- * store-and-forward replay sends one envelope every
- * [STORE_REPLAY_THROTTLE_MS] (about 7/s), and everything else - chat, risk
- * updates, alerts - is far rarer. 10/s sustained with a burst of 60 leaves ample
- * headroom while still bounding what one device can do.
- *
- * Without this, every inbound envelope triggered a rebroadcast to all peers plus
- * a Room write, so a single malfunctioning or hostile device could saturate the
- * mesh, fill the 500-row store with junk and burn every peer's battery.
- */
 private const val RECEIVE_BUCKET_CAPACITY = 60.0
 private const val RECEIVE_REFILL_PER_SECOND = 10.0
-
-/** Consecutive drops from one endpoint before it is disconnected outright. */
 private const val RECEIVE_DROPS_BEFORE_DISCONNECT = 50
-
-/** Bound on tracked endpoints, so the limiter cannot itself become a leak. */
 private const val MAX_TRACKED_ENDPOINTS = 64
 
-/** What MeshManager needs from the underlying transport - kept transport-agnostic. */
 interface MeshTransport {
-    /** Returns how many connected peers the payload was dispatched to; 0 means nothing was in range. */
     fun broadcastExcept(bytes: ByteArray, excludeEndpointId: String?): Int
     fun sendTo(endpointId: String, bytes: ByteArray)
-
-    /** Drops a peer that has exceeded the receive-path rate limit. */
     fun disconnect(endpointId: String)
 }
 
-/**
- * Token bucket per endpoint, with a consecutive-drop counter so a peer that
- * keeps hammering is eventually cut loose rather than merely throttled forever.
- */
 private class ReceiveRateLimiter {
 
     private class Bucket(var tokens: Double, var lastRefillMs: Long, var consecutiveDrops: Int = 0)
 
     private val buckets = LinkedHashMap<String, Bucket>()
 
-    /** True to accept the message; false to drop it. */
     @Synchronized
     fun allow(endpointId: String, nowMs: Long = System.currentTimeMillis()): Boolean {
         val bucket = buckets.getOrPut(endpointId) {
@@ -119,7 +77,6 @@ private class ReceiveRateLimiter {
     }
 }
 
-/** Fixed-capacity LRU set of message ids, used for relay dedup. */
 private class LruMessageIdCache(private val capacity: Int) {
     private val map = object : LinkedHashMap<String, Boolean>(capacity, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean =
@@ -127,7 +84,6 @@ private class LruMessageIdCache(private val capacity: Int) {
     }
     private val synced = Collections.synchronizedMap(map)
 
-    /** Returns true (and records it) if this id was already seen. */
     fun containsAndAdd(id: String): Boolean {
         synchronized(synced) {
             if (synced.containsKey(id)) return true
@@ -137,19 +93,12 @@ private class LruMessageIdCache(private val capacity: Int) {
     }
 }
 
-/**
- * Fixed-capacity LRU map of beaconId -> highest sequence seen, used for SOS
- * relay dedup. Kept entirely separate from [LruMessageIdCache] so a burst of
- * regular chat traffic can never evict - or get prioritised over - live SOS
- * state.
- */
 private class LruBeaconSequenceCache(private val capacity: Int) {
     private val map = object : LinkedHashMap<String, Int>(capacity, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>): Boolean =
             size > capacity
     }
 
-    /** Returns true (and records [sequence]) only if it is newer than what's stored for [beaconId]. */
     @Synchronized
     fun registerIfNewer(beaconId: String, sequence: Int): Boolean {
         val previous = map[beaconId]
@@ -159,12 +108,6 @@ private class LruBeaconSequenceCache(private val capacity: Int) {
     }
 }
 
-/**
- * Implements the relay-then-decrypt algorithm: every envelope is forwarded to
- * other peers purely based on its plaintext routing fields, regardless of
- * whether this device can read it. Decryption is attempted only afterwards,
- * and only for channels this device has actually joined.
- */
 class MeshManager(
     private val transport: MeshTransport,
     private val channelRepository: ChannelRepository,
@@ -183,7 +126,6 @@ class MeshManager(
     private val _incomingSosBeacons = MutableSharedFlow<SosBeacon>(extraBufferCapacity = 64)
     val incomingSosBeacons: SharedFlow<SosBeacon> = _incomingSosBeacons.asSharedFlow()
 
-    /** Store-and-forward activity, surfaced by the UI to make the otherwise-invisible relay behaviour visible. */
     sealed class RelayActivityEvent {
         data class Carried(val isSos: Boolean, val at: Long = System.currentTimeMillis()) : RelayActivityEvent()
         data class DeliveredOnConnect(
@@ -198,21 +140,10 @@ class MeshManager(
     val relayActivity: SharedFlow<RelayActivityEvent> = _relayActivity.asSharedFlow()
 
     private val _peerConnections = MutableSharedFlow<String>(extraBufferCapacity = 16)
-    /**
-     * Endpoint ids of peers as they connect. Lets a feature push its current
-     * state to a new neighbour immediately rather than waiting for its next
-     * scheduled broadcast - used by the risk repository so a device that walks
-     * into range gets the local flood assessment at once.
-     */
     val peerConnections: SharedFlow<String> = _peerConnections.asSharedFlow()
 
     /** Called by the transport layer whenever a raw envelope arrives from a peer. */
     fun onEnvelopeReceived(fromEndpointId: String, envelope: MeshEnvelope) {
-        // Rate limit before anything else - relay, store write, decrypt. This is
-        // the first thing an inbound envelope touches, so a flooding peer costs
-        // one map lookup rather than a broadcast to every neighbour plus a Room
-        // insert. SOS is limited too: an attacker able to bypass the limit by
-        // setting a channel id would make the limiter pointless.
         if (!rateLimiter.allow(fromEndpointId)) {
             if (rateLimiter.shouldDisconnect(fromEndpointId)) {
                 Log.w(TAG, "disconnecting $fromEndpointId - sustained flood on the receive path")
@@ -222,55 +153,31 @@ class MeshManager(
             return
         }
 
-        // SOS takes a completely separate path: dedup'd by (beaconId, sequence)
-        // rather than messageId, so it is never dropped or delayed by regular
-        // chat traffic churning the messageId seen-set.
         if (envelope.channelId == SOS_CHANNEL_ID) {
             onSosEnvelopeReceived(fromEndpointId, envelope)
             return
         }
 
-        // 1 + 2: dedup via seen-set, atomically checked and recorded.
         if (seenIds.containsAndAdd(envelope.messageId)) return
 
-        // 3: relay first, decrypt second - unconditional on whether we can read it.
+        // 1. Relay forward to peers first (TTL bounded)
         if (envelope.hopCount < envelope.maxHops) {
             val relayed = envelope.copy(hopCount = envelope.hopCount + 1)
             transport.broadcastExcept(MeshSerialization.encodeEnvelope(relayed), fromEndpointId)
             storeForRelay(relayed)
         }
 
-        // 4: attempt to decrypt only if we're actually a member of this channel.
+        // 2. Attempt local consumption and verification
         tryDecryptAndEmit(envelope, isMine = false)
     }
 
-    /**
-     * Encrypts (if required) and broadcasts a new outbound message, echoing it
-     * locally.
-     *
-     * [maxHops] is overridable because not all traffic is equal: chat stays at
-     * the default radius, while risk updates use [RISK_UPDATE_MAX_HOPS] so they
-     * reach offline devices far from whoever had connectivity.
-     *
-     * Returns the number of connected peers the envelope was actually dispatched
-     * to, and 0 when the send was refused (role gate, unknown channel, missing
-     * key) or nothing was in range. Callers that report delivery to the user must
-     * use this rather than a separately-maintained peer counter, which can be
-     * stale in both directions. Like [sendSosBeacon], this is a dispatch count,
-     * not a delivery acknowledgement.
-     */
     fun sendMessage(
         channelId: String,
         payload: MeshPayload,
         audioBytes: ByteArray? = null,
         maxHops: Int = DEFAULT_MAX_HOPS,
     ): Int {
-        // The enforcement point that actually matters: even if a UI path is
-        // missed (a screen someone forgets to gate, a future caller), an
-        // authoritative flood alert never leaves this device unless the
-        // session role is OPERATOR/ADMIN. Everything else in this class
-        // (relay, decrypt, SOS) stays open to every role - only origination
-        // of a FLOOD_ALERT is restricted.
+        // Enforce role gating for authoritative flood alerts
         if (payload.type == MessageType.FLOOD_ALERT) {
             val role = SessionManager.currentRole
             if (role != UserRole.OPERATOR && role != UserRole.ADMIN) {
@@ -314,7 +221,6 @@ class MeshManager(
             )
         }
 
-        // Prevent reprocessing our own message if it loops back through the mesh.
         seenIds.containsAndAdd(envelope.messageId)
 
         val reachedPeers = transport.broadcastExcept(
@@ -322,25 +228,10 @@ class MeshManager(
             excludeEndpointId = null,
         )
         storeForRelay(envelope)
-
-        // Nearby never delivers our own outbound payload back to us - echo locally.
         tryDecryptAndEmit(envelope, isMine = true)
         return reachedPeers
     }
 
-    /**
-     * Sends a message to one specific peer rather than broadcasting it.
-     *
-     * Used to hand a newly connected neighbour the current state of something
-     * immediately - a risk assessment they may have no way of fetching
-     * themselves. Deliberately not stored for relay and not echoed locally:
-     * this is a targeted top-up of a peer that just arrived, and the broadcast
-     * that originally produced this state has already been stored.
-     *
-     * Only unencrypted channels are supported, because that is all this is
-     * needed for; sending on an encrypted channel here would silently skip the
-     * encryption the channel promises, so it is refused instead.
-     */
     fun sendMessageTo(
         endpointId: String,
         channelId: String,
@@ -366,35 +257,33 @@ class MeshManager(
         transport.sendTo(endpointId, MeshSerialization.encodeEnvelope(envelope))
     }
 
-    /**
-     * Broadcasts an SOS beacon: always plaintext, always on [SOS_CHANNEL_ID],
-     * never through [ChannelRepository]/[ChannelCrypto] - every device must be
-     * able to read it whether or not it shares a passphrase with the sender.
-     *
-     * Returns the number of peers the beacon actually went out to, so the SOS
-     * UI can say "reached N devices" or "no devices in range" truthfully
-     * rather than counting attempts.
-     */
     fun sendSosBeacon(beacon: SosBeacon): Int {
+        val currentRole = SessionManager.currentRole ?: UserRole.CITIZEN
+
+        // Compute PoW if this beacon is from a civilian without an operator signature
+        val finalizedBeacon = if (beacon.signature == null && beacon.powNonce == null) {
+            val nonce = ChannelCrypto.solveSosProofOfWork(beacon.senderId, beacon.sentAt)
+            beacon.copy(powNonce = nonce, signerRole = currentRole.name)
+        } else {
+            beacon
+        }
+
         val envelope = MeshEnvelope(
             messageId = UUID.randomUUID().toString(),
             channelId = SOS_CHANNEL_ID,
             isEncrypted = false,
             iv = null,
-            payload = MeshSerialization.encodeSosBeacon(beacon),
+            payload = MeshSerialization.encodeSosBeacon(finalizedBeacon),
             hopCount = 0,
             maxHops = SOS_MAX_HOPS,
         )
 
-        // Record locally so a copy of our own beacon looping back through the
-        // mesh doesn't get treated as a "new" beacon and re-emitted.
-        seenBeacons.registerIfNewer(beacon.beaconId, beacon.sequence)
+        seenBeacons.registerIfNewer(finalizedBeacon.beaconId, finalizedBeacon.sequence)
 
         val reachedPeers = transport.broadcastExcept(MeshSerialization.encodeEnvelope(envelope), excludeEndpointId = null)
         storeForRelay(envelope)
 
-        // Nearby never delivers our own outbound payload back to us - echo locally.
-        _incomingSosBeacons.tryEmit(beacon)
+        _incomingSosBeacons.tryEmit(finalizedBeacon)
         return reachedPeers
     }
 
@@ -406,11 +295,28 @@ class MeshManager(
             return
         }
 
-        // Not newer than what we've already relayed for this beaconId: drop, no relay.
+        // Dedup check: Ignore if we have seen an equal or higher sequence for this beacon
         if (!seenBeacons.registerIfNewer(beacon.beaconId, beacon.sequence)) return
 
-        _incomingSosBeacons.tryEmit(beacon)
+        // Anti-Spam Verification: If unsigned, verify Proof-of-Work difficulty
+        if (beacon.signature == null) {
+            val nonce = beacon.powNonce
+            if (nonce == null || !ChannelCrypto.verifySosProofOfWork(beacon.senderId, beacon.sentAt, nonce)) {
+                Log.w(TAG, "dropping SOS beacon: missing or invalid PoW nonce from ${beacon.senderId}")
+                return
+            }
+        }
 
+        // Role-Based UI Delivery:
+        // Citizen SOS beacons only terminate on Operator/Admin devices (or our own beacon echo)
+        val myRole = SessionManager.currentRole ?: UserRole.CITIZEN
+        val isMine = beacon.senderId == myDeviceId
+
+        if (isMine || myRole == UserRole.OPERATOR || myRole == UserRole.ADMIN) {
+            _incomingSosBeacons.tryEmit(beacon)
+        }
+
+        // Relay across the mesh regardless of our role so responders further away receive it
         if (envelope.hopCount < envelope.maxHops) {
             val relayed = envelope.copy(hopCount = envelope.hopCount + 1)
             transport.broadcastExcept(MeshSerialization.encodeEnvelope(relayed), fromEndpointId)
@@ -418,7 +324,6 @@ class MeshManager(
         }
     }
 
-    /** Persists [envelope] for store-and-forward, off the calling (transport callback) thread. */
     private fun storeForRelay(envelope: MeshEnvelope) {
         scope.launch {
             val wasStored = messageStore.record(envelope)
@@ -426,16 +331,7 @@ class MeshManager(
         }
     }
 
-    /**
-     * Called when a peer freshly connects: replays every unexpired envelope
-     * this device is carrying that hasn't already reached them - SOS beacons
-     * first, oldest-first otherwise - so store-and-forward delivery actually
-     * happens the moment a new peer comes into range. Hop counts are not
-     * touched; they were already applied when each envelope was first stored.
-     */
     fun onPeerConnected(endpointId: String) {
-        // A reconnecting peer starts with a full bucket rather than inheriting
-        // the drop count that got it disconnected.
         rateLimiter.forget(endpointId)
         _peerConnections.tryEmit(endpointId)
         scope.launch {
@@ -454,22 +350,6 @@ class MeshManager(
         }
     }
 
-    /**
-     * Writes a received voice clip under a name this device derives, never one
-     * supplied by the sender.
-     *
-     * `payload.audioFileName` comes straight off the wire and used to be passed
-     * to `File(cacheDir, name)` unsanitised, so a name like
-     * `../databases/waveq_incidents` escaped the cache directory and overwrote
-     * arbitrary files in the app sandbox - reachable by any nearby device, since
-     * connections are auto-accepted and the City-Wide channel is unencrypted.
-     *
-     * The messageId is used instead, but it is also attacker-controlled (it is
-     * just a `readUTF` off the envelope), so it is reduced to safe characters
-     * rather than trusted. The canonical-path check afterwards is belt and
-     * braces: if the sanitiser is ever weakened, the write still cannot land
-     * outside the cache directory.
-     */
     private fun writeReceivedAudio(messageId: String, audioBytes: ByteArray): File? {
         val safeId = messageId.filter { it.isLetterOrDigit() || it == '-' }.take(64)
             .ifBlank { UUID.randomUUID().toString() }
@@ -488,17 +368,34 @@ class MeshManager(
     }
 
     private fun tryDecryptAndEmit(envelope: MeshEnvelope, isMine: Boolean) {
-        val channel = channelRepository.getChannel(envelope.channelId) ?: return // not a member: relay-only
+        val channel = channelRepository.getChannel(envelope.channelId) ?: return
 
         val plaintext = if (channel.isEncrypted) {
             val key = channelRepository.getKey(envelope.channelId) ?: return
             val iv = envelope.iv ?: return
-            ChannelCrypto.decrypt(EncryptedBlob(iv, envelope.payload), key) ?: return // bad key/tampered: drop silently
+            ChannelCrypto.decrypt(EncryptedBlob(iv, envelope.payload), key) ?: return
         } else {
             envelope.payload
         }
 
         val (payload, audioBytes) = MeshSerialization.decodePayloadWithAudio(plaintext)
+
+        // 1. Authenticity check: Verify signature for FLOOD_ALERT messages
+        if (payload.type == MessageType.FLOOD_ALERT && !isMine) {
+            if (!verifyOperatorBroadcast(payload)) {
+                Log.w(TAG, "dropping FLOOD_ALERT: unauthenticated or invalid signature")
+                return
+            }
+        }
+
+        // 2. Audience scope check: Citizen SOS distress messages are restricted to Responders
+        val myRole = SessionManager.currentRole ?: UserRole.CITIZEN
+        if (payload.targetScope == AlertScope.RESPONDERS_ONLY &&
+            myRole != UserRole.OPERATOR && myRole != UserRole.ADMIN && !isMine
+        ) {
+            // Relayed at the network layer, but ignored by civilian UI
+            return
+        }
 
         val audioFile = if (audioBytes != null && audioBytes.isNotEmpty() && payload.audioFileName != null) {
             writeReceivedAudio(envelope.messageId, audioBytes)
@@ -522,7 +419,17 @@ class MeshManager(
                 incidentJson = payload.incidentJson,
                 sensorJson = payload.sensorJson,
                 hopCount = envelope.hopCount,
+                targetScope = payload.targetScope,
+                signature = payload.signature,
+                signerRole = payload.signerRole,
             ),
         )
+    }
+
+    private fun verifyOperatorBroadcast(payload: MeshPayload): Boolean {
+        val signature = payload.signature ?: return false
+        val trustedPublicKey = SessionManager.getOperatorPublicKey() ?: return false
+        val signedData = "${payload.severity}:${payload.text}:${payload.timestamp}".toByteArray(Charsets.UTF_8)
+        return ChannelCrypto.verifyAuthority(signedData, signature, trustedPublicKey)
     }
 }

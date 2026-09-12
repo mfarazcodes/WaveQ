@@ -1,5 +1,6 @@
 package com.waveq.app.mesh
 
+import android.util.Base64
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -11,16 +12,6 @@ private const val GCM_IV_BYTES = 12
 
 /**
  * Hard ceiling on any length field read off the wire.
- *
- * Nearby Connections' BYTES payload limit is 32 KB, so nothing legitimate can
- * exceed it - and every length below is attacker-controlled. A declared length
- * of 0x7FFFFFFF used to be passed straight to `ByteArray(...)`, allocating 2 GB
- * and throwing OutOfMemoryError from a ~20-byte message sent by any unpaired
- * device in range. OutOfMemoryError is an Error, not an Exception, so the
- * transport's `catch (e: Exception)` would not have caught it either.
- *
- * Deliberately a plain constant rather than ConnectionsClient.MAX_BYTES_DATA_SIZE:
- * this file is transport-agnostic and must not depend on GMS.
  */
 const val MAX_WIRE_PAYLOAD_BYTES = 32 * 1024
 
@@ -62,32 +53,14 @@ object MeshSerialization {
             val isEncrypted = d.readBoolean()
             val iv = if (isEncrypted) ByteArray(GCM_IV_BYTES).also { d.readFully(it) } else null
             val payloadLen = d.readInt()
-            // Checked BEFORE allocating, against both the protocol ceiling and
-            // the buffer we actually have. Either check alone is insufficient:
-            // the ceiling stops the 2 GB allocation, the buffer size stops a
-            // merely-large lie from allocating 32 KB per malformed message.
             requireValidLength(payloadLen, bytes.size, "payload")
             val payload = ByteArray(payloadLen).also { d.readFully(it) }
-            // Hop fields are attacker-controlled and they are the only thing
-            // bounding how far a message travels. Unclamped, a peer declaring
-            // maxHops = Int.MAX_VALUE makes one message traverse the entire
-            // connected cluster regardless of the 5-hop chat default or the
-            // 12-hop alert cap, and a negative hopCount buys extra hops on top
-            // of whatever cap it declares.
-            //
-            // Clamped rather than rejected: a nonsense hop field is far more
-            // likely to be an older or buggy build than an attack, and dropping
-            // the message outright would silently lose a life-safety alert whose
-            // body is perfectly good. Constraining it costs nothing legitimate -
-            // every sender in this app already declares a value inside this
-            // range, so real traffic passes through untouched.
             val hopCount = d.readInt().coerceAtLeast(0)
-            val maxHops = d.readInt().coerceIn(1, SENSOR_ALERT_MAX_HOPS)
+            val maxHops = d.readInt().coerceIn(1, 12)
             return MeshEnvelope(messageId, channelId, isEncrypted, iv, payload, hopCount, maxHops)
         }
     }
 
-    /** Throws unless [length] is a plausible size for a field inside a [total]-byte buffer. */
     private fun requireValidLength(length: Int, total: Int, field: String) {
         require(length >= 0) { "negative $field length: $length" }
         require(length <= MAX_WIRE_PAYLOAD_BYTES) { "$field length $length exceeds the wire ceiling" }
@@ -106,11 +79,34 @@ object MeshSerialization {
         obj.put("riskJson", payload.riskJson ?: JSONObject.NULL)
         obj.put("incidentJson", payload.incidentJson ?: JSONObject.NULL)
         obj.put("sensorJson", payload.sensorJson ?: JSONObject.NULL)
+
+        // Target scope & operator signature
+        obj.put("targetScope", payload.targetScope.name)
+        val sigB64: Any = payload.signature?.let { Base64.encodeToString(it, Base64.NO_WRAP) } ?: JSONObject.NULL
+        obj.put("signature", sigB64)
+        obj.put("signerRole", payload.signerRole ?: JSONObject.NULL)
         return obj.toString()
     }
 
     fun payloadFromJson(json: String): MeshPayload {
         val obj = JSONObject(json)
+        val targetScopeStr = obj.optString("targetScope", AlertScope.ALL_PEERS.name)
+        val targetScope = runCatching { AlertScope.valueOf(targetScopeStr) }.getOrDefault(AlertScope.ALL_PEERS)
+
+        val signatureBytes = if (obj.isNull("signature")) {
+            null
+        } else {
+            obj.optString("signature").takeIf { it.isNotEmpty() }?.let {
+                runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull()
+            }
+        }
+
+        val signerRole = if (obj.isNull("signerRole")) {
+            null
+        } else {
+            obj.optString("signerRole").takeIf { it.isNotEmpty() }
+        }
+
         return MeshPayload(
             senderId = obj.getString("senderId"),
             senderName = obj.getString("senderName"),
@@ -119,11 +115,7 @@ object MeshSerialization {
             audioFileName = if (obj.isNull("audioFileName")) null else obj.getString("audioFileName"),
             timestamp = obj.getLong("timestamp"),
             severity = if (obj.isNull("severity")) null else obj.getString("severity"),
-            // optString, not getString: a payload from an older build has no
-            // such field and must still parse rather than throwing.
             riskJson = if (obj.isNull("riskJson")) null else obj.optString("riskJson").takeIf { it.isNotEmpty() },
-            // Absent from payloads sent by older builds; optString, not
-            // getString, so those still parse rather than throwing.
             incidentJson = if (obj.isNull("incidentJson")) {
                 null
             } else {
@@ -134,6 +126,9 @@ object MeshSerialization {
             } else {
                 obj.optString("sensorJson").takeIf { it.isNotEmpty() }
             },
+            targetScope = targetScope,
+            signature = signatureBytes,
+            signerRole = signerRole,
         )
     }
 
@@ -143,19 +138,22 @@ object MeshSerialization {
         obj.put("sequence", beacon.sequence)
         obj.put("senderId", beacon.senderId)
         obj.put("senderName", beacon.senderName)
-        // Explicit JSON null, never a sentinel coordinate: a receiver must be
-        // able to tell "no fix yet" from a position at 0,0.
         obj.put("latitude", beacon.latitude ?: JSONObject.NULL)
         obj.put("longitude", beacon.longitude ?: JSONObject.NULL)
         obj.put("accuracyMeters", beacon.accuracyMeters?.toDouble() ?: JSONObject.NULL)
-        // Explicit JSON null for an unreadable capacity, same convention as the
-        // coordinates above - a receiver must be able to tell "unknown" from a
-        // reading.
         obj.put("batteryPercent", beacon.batteryPercent ?: JSONObject.NULL)
         obj.put("isCharging", beacon.isCharging)
         obj.put("note", beacon.note ?: JSONObject.NULL)
         obj.put("startedAt", beacon.startedAt)
         obj.put("sentAt", beacon.sentAt)
+
+        // Anti-spam PoW & Responder Signatures
+        val nonceVal: Any = beacon.powNonce ?: JSONObject.NULL
+        obj.put("powNonce", nonceVal)
+
+        val sigB64: Any = beacon.signature?.let { Base64.encodeToString(it, Base64.NO_WRAP) } ?: JSONObject.NULL
+        obj.put("signature", sigB64)
+        obj.put("signerRole", beacon.signerRole ?: JSONObject.NULL)
         return obj.toString()
     }
 
@@ -163,14 +161,29 @@ object MeshSerialization {
         val obj = JSONObject(json)
         val rawLatitude = if (obj.isNull("latitude")) null else obj.getDouble("latitude")
         val rawLongitude = if (obj.isNull("longitude")) null else obj.getDouble("longitude")
-        // An off-globe coordinate is not a position, so it takes the path the
-        // format already has for "no position": null. The alternative - passing
-        // 9999.0 through - would render a confident bearing and distance to a
-        // place that does not exist, which is worse than admitting no fix on a
-        // screen a responder uses to decide where to go. NaN fails these
-        // comparisons and is nulled with the rest.
         val hasUsableFix = rawLatitude != null && rawLongitude != null &&
-            rawLatitude in -90.0..90.0 && rawLongitude in -180.0..180.0
+                rawLatitude in -90.0..90.0 && rawLongitude in -180.0..180.0
+
+        val powNonce = if (obj.isNull("powNonce") || !obj.has("powNonce")) {
+            null
+        } else {
+            obj.getLong("powNonce")
+        }
+
+        val signatureBytes = if (obj.isNull("signature") || !obj.has("signature")) {
+            null
+        } else {
+            obj.optString("signature").takeIf { it.isNotEmpty() }?.let {
+                runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull()
+            }
+        }
+
+        val signerRole = if (obj.isNull("signerRole") || !obj.has("signerRole")) {
+            null
+        } else {
+            obj.optString("signerRole").takeIf { it.isNotEmpty() }
+        }
+
         return SosBeacon(
             beaconId = obj.getString("beaconId"),
             sequence = obj.getInt("sequence"),
@@ -178,22 +191,11 @@ object MeshSerialization {
             senderName = obj.getString("senderName"),
             latitude = if (hasUsableFix) rawLatitude else null,
             longitude = if (hasUsableFix) rawLongitude else null,
-            // Dropped along with the coordinates: an accuracy radius around a
-            // position that was discarded describes nothing.
             accuracyMeters = if (!hasUsableFix || obj.isNull("accuracyMeters")) {
                 null
             } else {
                 obj.getDouble("accuracyMeters").toFloat()
             },
-            // Absent or explicitly null from a sender that could not read its
-            // own capacity, and null again for anything outside 0..100.
-            //
-            // Not clamped: a pre-fix build's Integer.MIN_VALUE sentinel would
-            // clamp to 0 and render as "0%", which on an SOS triage screen reads
-            // as a phone about to die and gets acted on. Out of range means the
-            // sender did not report a capacity, so it takes the same path as an
-            // absent one. SosScreen's battery row rendered this value raw, so an
-            // out-of-range percent reached the screen unchallenged.
             batteryPercent = if (obj.isNull("batteryPercent")) {
                 null
             } else {
@@ -203,15 +205,16 @@ object MeshSerialization {
             note = if (obj.isNull("note")) null else obj.getString("note"),
             startedAt = obj.getLong("startedAt"),
             sentAt = obj.getLong("sentAt"),
+            powNonce = powNonce,
+            signature = signatureBytes,
+            signerRole = signerRole,
         )
     }
 
-    /** SOS beacons are always plaintext - no encryption framing, unlike [encodePayloadWithAudio]. */
     fun encodeSosBeacon(beacon: SosBeacon): ByteArray = sosBeaconToJson(beacon).toByteArray(Charsets.UTF_8)
 
     fun decodeSosBeacon(bytes: ByteArray): SosBeacon = sosBeaconFromJson(String(bytes, Charsets.UTF_8))
 
-    /** Frames payload metadata + raw audio bytes as one plaintext buffer for voice messages. */
     fun encodePayloadWithAudio(payload: MeshPayload, audioBytes: ByteArray): ByteArray {
         val json = payloadToJson(payload).toByteArray(Charsets.UTF_8)
         val out = ByteArrayOutputStream()
@@ -223,13 +226,10 @@ object MeshSerialization {
         return out.toByteArray()
     }
 
-    /** Inverse of [encodePayloadWithAudio]. Returns null audio bytes for a plain text-only buffer. */
     fun decodePayloadWithAudio(bytes: ByteArray): Pair<MeshPayload, ByteArray?> {
         require(bytes.size <= MAX_WIRE_PAYLOAD_BYTES) { "plaintext larger than the wire ceiling" }
         DataInputStream(ByteArrayInputStream(bytes)).use { d ->
             val jsonLen = d.readInt()
-            // Same reasoning as decodeEnvelope: this length is attacker-supplied
-            // on an unencrypted channel and reaches ByteArray(...) directly.
             requireValidLength(jsonLen, bytes.size, "json")
             val jsonBytes = ByteArray(jsonLen).also { d.readFully(it) }
             val payload = payloadFromJson(String(jsonBytes, Charsets.UTF_8))
