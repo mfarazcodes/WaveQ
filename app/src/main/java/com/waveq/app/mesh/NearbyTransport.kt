@@ -69,7 +69,7 @@ data class TransportStatus(
             else -> "Starting…"
         }
 
-    val isDegraded: Boolean get() = isStarted && !(isAdvertising && isDiscovering)
+    val isDegraded: Boolean get() = isStarted && !(isAdvertising || isDiscovering)
 }
 
 class NearbyTransport(context: Context) : MeshTransport {
@@ -104,7 +104,15 @@ class NearbyTransport(context: Context) : MeshTransport {
 
     private fun publishStatus(error: String? = null, clearError: Boolean = false) {
         val targets = currentTargets()
-        val peers = targets.map { MeshPeer(it, endpointNames[it] ?: "Unknown device") }
+        // Group multiple connections from the same device name to reduce UI duplicates
+        val uniquePeersMap = LinkedHashMap<String, MeshPeer>()
+        targets.forEach { 
+            val name = endpointNames[it] ?: "Unknown device"
+            if (!uniquePeersMap.containsKey(name)) {
+                uniquePeersMap[name] = MeshPeer(it, name)
+            }
+        }
+        val peers = uniquePeersMap.values.toList()
         val discovered = discoveredEndpoints.size
         _status.update { current ->
             current.copy(
@@ -148,16 +156,33 @@ class NearbyTransport(context: Context) : MeshTransport {
         _status.update { TransportStatus(isLowPower = it.isLowPower) }
     }
 
+    private var lastRescanMs = 0L
+
     fun rescan() {
         if (!isStarted) return
+        val now = System.currentTimeMillis()
+        if (now - lastRescanMs < 3000) {
+            Log.i(TAG, "rescan requested too soon - debouncing")
+            return
+        }
+        lastRescanMs = now
         Log.i(TAG, "rescan requested")
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAdvertising()
-        discoveredEndpoints.clear()
-        connectAttempts.clear()
-        _status.update { it.copy(isAdvertising = false, isDiscovering = false, lastError = null) }
-        startAdvertising()
-        startDiscovery()
+        
+        scope.launch {
+            connectionsClient.stopDiscovery()
+            connectionsClient.stopAdvertising()
+            discoveredEndpoints.clear()
+            connectAttempts.clear()
+            _status.update { it.copy(isAdvertising = false, isDiscovering = false, lastError = null) }
+            
+            // Allow Nearby Connections to clean up internal state before restarting
+            delay(500)
+            
+            if (isStarted) {
+                startAdvertising()
+                startDiscovery()
+            }
+        }
     }
 
     fun setLowPowerMode(enabled: Boolean) {
@@ -173,9 +198,9 @@ class NearbyTransport(context: Context) : MeshTransport {
     }
 
     private fun startAdvertising() {
+        Log.i(TAG, "Calling startAdvertising...")
         val advertisingOptions = AdvertisingOptions.Builder()
             .setStrategy(STRATEGY)
-            .setLowPower(true)
             .build()
 
         connectionsClient.startAdvertising(
@@ -185,9 +210,17 @@ class NearbyTransport(context: Context) : MeshTransport {
             advertisingOptions,
         )
             .addOnSuccessListener {
+                Log.i(TAG, "startAdvertising success")
                 _status.update { current -> current.copy(isAdvertising = true, lastError = null) }
             }
             .addOnFailureListener { error ->
+                if (error is com.google.android.gms.common.api.ApiException) {
+                    if (error.statusCode == com.google.android.gms.nearby.connection.ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) {
+                        Log.i(TAG, "startAdvertising: already advertising")
+                        _status.update { current -> current.copy(isAdvertising = true, lastError = null) }
+                        return@addOnFailureListener
+                    }
+                }
                 Log.w(TAG, "startAdvertising failed", error)
                 val msg = if (error.message != null) error.message else "unknown error"
                 _status.update { current ->
@@ -200,11 +233,14 @@ class NearbyTransport(context: Context) : MeshTransport {
     }
 
     private fun startDiscovery() {
-        if (_status.value.isLowPower) return
+        Log.i(TAG, "Calling startDiscovery...")
+        if (_status.value.isLowPower) {
+            Log.i(TAG, "startDiscovery skipped (isLowPower = true)")
+            return
+        }
 
         val discoveryOptions = DiscoveryOptions.Builder()
             .setStrategy(STRATEGY)
-            .setLowPower(true)
             .build()
 
         connectionsClient.startDiscovery(
@@ -213,9 +249,17 @@ class NearbyTransport(context: Context) : MeshTransport {
             discoveryOptions,
         )
             .addOnSuccessListener {
+                Log.i(TAG, "startDiscovery success")
                 _status.update { current -> current.copy(isDiscovering = true, lastError = null) }
             }
             .addOnFailureListener { error ->
+                if (error is com.google.android.gms.common.api.ApiException) {
+                    if (error.statusCode == com.google.android.gms.nearby.connection.ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) {
+                        Log.i(TAG, "startDiscovery: already discovering")
+                        _status.update { current -> current.copy(isDiscovering = true, lastError = null) }
+                        return@addOnFailureListener
+                    }
+                }
                 Log.w(TAG, "startDiscovery failed", error)
                 val msg = if (error.message != null) error.message else "unknown error"
                 _status.update { current ->
@@ -412,8 +456,13 @@ class NearbyTransport(context: Context) : MeshTransport {
         val attempt = (connectAttempts[endpointId] ?: 0) + 1
         connectAttempts[endpointId] = attempt
         connectionsClient.requestConnection(displayName, endpointId, connectionLifecycleCallback)
-            .addOnFailureListener {
-                Log.w(TAG, "requestConnection to " + endpointId + " failed (attempt " + attempt + ")", it)
+            .addOnFailureListener { error ->
+                if (error is com.google.android.gms.common.api.ApiException) {
+                    if (error.statusCode == com.google.android.gms.nearby.connection.ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) {
+                        return@addOnFailureListener
+                    }
+                }
+                Log.w(TAG, "requestConnection to " + endpointId + " failed (attempt " + attempt + ")", error)
                 scheduleConnectRetry(endpointId)
             }
     }

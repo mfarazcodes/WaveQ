@@ -309,10 +309,12 @@ class MeshManager(
 
         // Role-Based UI Delivery:
         // Citizen SOS beacons only terminate on Operator/Admin devices (or our own beacon echo)
+        // If an Operator or Admin broadcasts an SOS, everybody should see it!
         val myRole = SessionManager.currentRole ?: UserRole.CITIZEN
         val isMine = beacon.senderId == myDeviceId
+        val isFromAuthority = beacon.signerRole == UserRole.OPERATOR.name || beacon.signerRole == UserRole.ADMIN.name
 
-        if (isMine || myRole == UserRole.OPERATOR || myRole == UserRole.ADMIN) {
+        if (isMine || myRole == UserRole.OPERATOR || myRole == UserRole.ADMIN || isFromAuthority) {
             _incomingSosBeacons.tryEmit(beacon)
         }
 

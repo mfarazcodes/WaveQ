@@ -161,9 +161,11 @@ object MeshAlertDispatcher {
                 }
 
                 // Role Guard: Citizen SOS alerts ONLY notify Operators and Admins.
-                // Civilian nodes act purely as relays and stay silent.
+                // Civilian nodes act purely as relays and stay silent, UNLESS it was sent by an operator.
                 val myRole = SessionManager.currentRole ?: UserRole.CITIZEN
-                if (myRole != UserRole.OPERATOR && myRole != UserRole.ADMIN) {
+                val isFromAuthority = beacon.signerRole == UserRole.OPERATOR.name || beacon.signerRole == UserRole.ADMIN.name
+                
+                if (myRole != UserRole.OPERATOR && myRole != UserRole.ADMIN && !isFromAuthority) {
                     Log.i(ALERT_PATH_TAG, "sos beacon ${beacon.beaconId} silenced - local device is CITIZEN")
                     return@collect
                 }

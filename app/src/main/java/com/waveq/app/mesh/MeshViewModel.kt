@@ -117,9 +117,11 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             meshManager.incomingSosBeacons.collect { beacon ->
                 val currentRole = SessionManager.currentRole ?: UserRole.CITIZEN
                 val isMine = beacon.senderId == myDeviceId
+                val isFromAuthority = beacon.signerRole == UserRole.OPERATOR.name || beacon.signerRole == UserRole.ADMIN.name
 
                 // Only show other peers' SOS beacons if we are an Operator or Admin, or it is our own beacon
-                if (!isMine && currentRole != UserRole.OPERATOR && currentRole != UserRole.ADMIN) {
+                // If it is from an authority (Operator/Admin), everyone should see it.
+                if (!isMine && currentRole != UserRole.OPERATOR && currentRole != UserRole.ADMIN && !isFromAuthority) {
                     return@collect
                 }
 
